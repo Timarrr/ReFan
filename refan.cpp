@@ -34,7 +34,7 @@ enum class Verbosity {
     DEBUG
 };
 
-Verbosity global_verbosity = Verbosity::DEBUG;
+Verbosity global_verbosity = Verbosity::WARNING;
 
 void log(std::string message, Verbosity v){
     time_t tt;
@@ -42,7 +42,7 @@ void log(std::string message, Verbosity v){
     std::string time_str(ctime(&tt));
     time_str.pop_back();
 
-    switch (v) {
+    switch (v) { //TODO: make logger account for global_verbosity with ifs and whatnot
     case Verbosity::FATAL:
         std::cout << "\033[31;1m" << time_str << " [F] " << message << "\033[0m\n";
         break;
@@ -102,7 +102,7 @@ static int dispatch(IniDispatch* const dispatch, void* ){
                                 ))
             {
             log(std::string("Fan \"") + current_section + "\"initialisation incomplete, likely because of invalid or missing values in config file\n", Verbosity::ERROR);
-            log("Not trying to fill empty values automatically because logic isn't implemented yet", Verbosity::FATAL);
+            log("Not trying to fill empty values automatically because logic isn't implemented yet", Verbosity::FATAL); //TODO: Implement autofilling logic
             return -1;
             }
         }
@@ -180,7 +180,7 @@ int fanHandler(Fan* fan){
 
     int pwm = clamp(round(map(temp_f, *fan->min_temp, *fan->max_temp, *fan->start_pwm, *fan->max_pwm)), *fan->min_pwm, *fan->max_pwm);
 
-    if(*fan->stopped){
+    if(*fan->stopped){//TODO: check this logic
         if(!(pwm>=*fan->start_pwm)){
             pwm=0;
         }
@@ -263,7 +263,7 @@ int main(int argc, char** argv){
         mode.write("1", 2);
     }
 
-    start:
+    start://TODO: make this into a while/for
         for (Fan* fan : fans) {
             if (fanHandler(fan)!=0) {
                 exit(-3);
