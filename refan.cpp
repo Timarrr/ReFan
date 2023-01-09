@@ -47,16 +47,20 @@ void log(std::string message, Verbosity v){
         std::cout << "\033[31;1m" << time_str << " [F] " << message << "\033[0m\n";
         break;
     case Verbosity::ERROR:
-        std::cout << "\033[31m" << time_str << " [E] " << message << "\033[0m\n";
+        if(global_verbosity>=Verbosity::ERROR)        
+            std::cout << "\033[31m" << time_str << " [E] " << message << "\033[0m\n";
         break;
     case Verbosity::WARNING:
-        std::cout << "\033[33m" << time_str << " [W] " << message << "\033[0m\n";
+        if(global_verbosity>=Verbosity::WARNING)        
+            std::cout << "\033[33m" << time_str << " [W] " << message << "\033[0m\n";
         break;
     case Verbosity::INFO:
-        std::cout << "\033[36m" << time_str << " [I] " << message << "\033[0m\n";
+        if(global_verbosity>=Verbosity::INFO)
+            std::cout << "\033[36m" << time_str << " [I] " << message << "\033[0m\n";
         break;
     case Verbosity::DEBUG:
-        std::cout << "\033[37m" << time_str << " [D] " << message << "\033[0m\n";
+        if(global_verbosity>=Verbosity::DEBUG)
+            std::cout << "\033[37m" << time_str << " [D] " << message << "\033[0m\n";
         break;
     }
 }
@@ -69,6 +73,7 @@ typedef struct Fan {
     std::string* pwm_mode_path      = nullptr;
     int* min_temp                   = nullptr;
     int* max_temp                   = nullptr;
+    int* lc_temp                    = nullptr;
     int* min_pwm                    = nullptr;
     int* max_pwm                    = nullptr;
     int* start_pwm                  = nullptr;
@@ -89,16 +94,17 @@ static int dispatch(IniDispatch* const dispatch, void* ){
         if ( !(((long long)current_section.find("Fan"))<0) || !(((long long)current_section.find("fan"))<0) ) {
             Fan* last = fans.back();
             if (fans.size()>0 && (
-                                last->max_pwm == nullptr ||
-                                last->min_pwm == nullptr ||
-                                last->max_temp == nullptr ||
-                                last->min_temp == nullptr ||
-                                last->start_pwm == nullptr ||
-                                last->stop_pwm == nullptr ||
-                                last->temp_input_path == nullptr ||
-                                last->pwm_control_path == nullptr ||
-                                last->pwm_read_path == nullptr ||
-                                last->pwm_mode_path == nullptr
+                                last->max_pwm ==            nullptr ||
+                                last->min_pwm ==            nullptr ||
+                                last->max_temp ==           nullptr ||
+                                last->min_temp ==           nullptr ||
+                                last->lc_temp ==            nullptr ||
+                                last->start_pwm ==          nullptr ||
+                                last->stop_pwm ==           nullptr ||
+                                last->temp_input_path ==    nullptr ||
+                                last->pwm_control_path ==   nullptr ||
+                                last->pwm_read_path ==      nullptr ||
+                                last->pwm_mode_path ==      nullptr
                                 ))
             {
             log(std::string("Fan \"") + current_section + "\"initialisation incomplete, likely because of invalid or missing values in config file\n", Verbosity::ERROR);
@@ -110,6 +116,7 @@ static int dispatch(IniDispatch* const dispatch, void* ){
             fans.push_back(new Fan());
             fans.back()->name = new std::string(section_candidate);
             fans.back()->stopped = new bool(false);
+            fans.back()->lc_temp = new int(0xffffffff);
         }
         current_section = section_candidate;
 
@@ -125,6 +132,11 @@ static int dispatch(IniDispatch* const dispatch, void* ){
             if(data == "step"){
                 fanstep = ini_get_int(dispatch->value);
             }
+            if(data == "verbosity")
+            {
+                global_verbosity=(Verbosity) (ini_get_int(dispatch->value));
+            }
+            
         }
 
         else if (current_section.find("Fan")>0 || current_section.find("fan")>0) {
@@ -171,16 +183,24 @@ int fanHandler(Fan* fan){
 
     char temp_c[16];
     temp.read(temp_c, 16);
-    float temp_f = atof(temp_c)/1000;
     temp.close();
+
+    float temp_f = atof(temp_c)/1000;
+
+    if ((!(*fan->lc_temp + fanstep <= temp_f || *fan->lc_temp - fanstep >= temp_f)) && fanstep != -1){ // if threshold is enabled and isn't exceeded
+        log(*fan->name + " temperature is within the treshold (actual=" + std::to_string(temp_f) + ", threshold=" + std::to_string(*fan->lc_temp) +"), skipping", Verbosity::DEBUG);
+        return 0;
+    }
+    *fan->lc_temp = temp_f;
     //logic breakdown:
     //fan should start spinning at start_pwm power as soon as temp_f > min_temp
     //continue spinning, adjusting the power as temp_f fluctuates
     //and stop/slow down as soon as temperature has fallen enough for the pwm value to become less than stop_pwm
 
-    int pwm = clamp(round(map(temp_f, *fan->min_temp, *fan->max_temp, *fan->start_pwm, *fan->max_pwm)), *fan->min_pwm, *fan->max_pwm);
+    //pwm value for writing to the fan control file
+    float pwm = clamp(round(map(temp_f, (float)*fan->min_temp, (float)*fan->max_temp, (float)*fan->start_pwm, (float)*fan->max_pwm)), *fan->min_pwm, *fan->max_pwm);
 
-    if(*fan->stopped){//TODO: check this logic
+    if(*fan->stopped){
         if(!(pwm>=*fan->start_pwm)){
             pwm=0;
         }
@@ -199,21 +219,26 @@ int fanHandler(Fan* fan){
 
     }
 
-    log("name: " + *fan->name + " pwm: " + std::to_string(pwm) + " start_pwm: " + std::to_string(*fan->start_pwm) + " stop_pwm: " + std::to_string(*fan->stop_pwm) + " stopped: " + std::to_string(*fan->stopped), Verbosity::DEBUG);
-    control.write(std::to_string(pwm).c_str(), std::to_string(pwm).length()); //Write pwm value
+    log("name: " + *fan->name + " pwm: " + std::to_string(pwm).c_str() + " start_pwm: " + std::to_string(*fan->start_pwm) + " stop_pwm: " + std::to_string(*fan->stop_pwm) + " stopped: " + std::to_string(*fan->stopped), Verbosity::DEBUG);
+
+    control.write(std::to_string((int)pwm).c_str(), std::to_string((int)pwm).length()); //Write pwm value
     control.close();
-    if (control.bad()) {
+
+    if (control.fail()) {
         log(*fan->name + " write failure, exiting", Verbosity::FATAL);
         return -1;
     }
 
-    char validate_c[16];
-    validate.read(validate_c, 16);
+    char* validate_c = (char*)malloc(sizeof(char) * 16);
+
+    validate.read(validate_c, std::max(std::to_string(*fan->max_pwm).length(), std::to_string(*fan->min_pwm).length()));
+    validate.close();
+
     if (!(pwm == atof(validate_c))){ //Validate pwm value write
+        log("Validation for " + *fan->name + " yielded " + validate_c + ". Intended value was " + std::to_string((int)pwm), Verbosity::FATAL);
         log(*fan->name + " write validation failure, exiting", Verbosity::FATAL);
         return -1;
     }
-    validate.close();
     return 0;
 }
 
@@ -235,12 +260,12 @@ void reset_fans(int sig){
 
 int main(int argc, char** argv){
     int nr = 1;
-    if(argc == 1){
+    if(argc == 1){//check for config
         log("No configuration file provided. exiting", Verbosity::FATAL);
         exit(-1);
     }
 
-    if(load_ini_path(argv[1], INI_DEFAULT_FORMAT, NULL, &dispatch, NULL)){
+    if(load_ini_path(argv[1], INI_DEFAULT_FORMAT, NULL, &dispatch, NULL)){ //parse config
         log("Config file parsing failed, exiting", Verbosity::FATAL);
         exit(-2);
     }
@@ -260,15 +285,22 @@ int main(int argc, char** argv){
 
     for (Fan* fan : fans) { //enable manual control
         std::ofstream mode(*fan->pwm_mode_path, std::ios_base::out);
+        log("Enabling " + *fan->name, Verbosity::INFO);
         mode.write("1", 2);
+        log("Success=" + std::to_string(mode.fail()), Verbosity::DEBUG);
+        mode.close();
     }
 
-    start://TODO: make this into a while/for
+    log("Waiting for the system to acknowledge the changes...", Verbosity::INFO);
+    usleep(100000);
+    log("Beginning the control loop...", Verbosity::INFO);
+
+    for (;true;) {
         for (Fan* fan : fans) {
             if (fanHandler(fan)!=0) {
                 exit(-3);
             }
         }
         usleep(uinterval);
-    goto start;
+    }
 }
